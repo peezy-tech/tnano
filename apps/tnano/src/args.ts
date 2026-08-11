@@ -129,6 +129,7 @@ export function parseArguments(argv: readonly string[]): CliArguments {
 
 export const HELP_TEXT = `Usage: t-nano [options] [prompt]
        t-nano harnesses
+       t-nano harness inspect <id>
        t-nano profiles
        t-nano profile add <id> --harness <id> [--label <text>] [--config-json <json>]
        t-nano profile remove <id>

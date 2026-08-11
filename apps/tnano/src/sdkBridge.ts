@@ -9,6 +9,7 @@ import {
   createTNanoRuntime,
   type HarnessAdapter,
   type HarnessEvent,
+  type HarnessInspection as SdkHarnessInspection,
   type HarnessProfile,
   type JsonObject,
   type JsonValue,
@@ -23,6 +24,7 @@ import { CliError, EXIT_CODES } from "./errors.ts";
 import type {
   AddProfileInput,
   EventListener,
+  HarnessInspection,
   HarnessSummary,
   ProfileSummary,
   RuntimeEvent,
@@ -66,6 +68,25 @@ function profileSummary(profile: HarnessProfile): ProfileSummary {
     label: profile.label,
     ...(profile.defaultModel === undefined ? {} : { model: profile.defaultModel }),
     status: profile.enabled ? "enabled" : "disabled",
+  };
+}
+
+function harnessInspection(inspection: SdkHarnessInspection): HarnessInspection {
+  const { manifest } = inspection;
+  return {
+    id: manifest.id,
+    apiVersion: manifest.apiVersion,
+    label: manifest.label,
+    version: manifest.version,
+    description: `${manifest.label} adapter ${manifest.version}`,
+    capabilities: manifest.capabilities,
+    profiles: inspection.profiles.map((profile) => ({
+      id: profile.id,
+      harnessId: manifest.id,
+      label: profile.label,
+      ...(profile.defaultModel === undefined ? {} : { model: profile.defaultModel }),
+      status: profile.enabled ? "enabled" : "disabled",
+    })),
   };
 }
 
@@ -120,11 +141,16 @@ class SdkRuntimePort implements RuntimePort {
   async listHarnesses(): Promise<readonly HarnessSummary[]> {
     return this.#runtime.listHarnesses().map((manifest) => ({
       id: manifest.id,
+      apiVersion: manifest.apiVersion,
       label: manifest.label,
       version: manifest.version,
       description: `${manifest.label} adapter ${manifest.version}`,
       capabilities: manifest.capabilities,
     }));
+  }
+
+  async inspectHarness(id: string): Promise<HarnessInspection> {
+    return harnessInspection(this.#runtime.inspectHarness(id));
   }
 
   async listProfiles(): Promise<readonly ProfileSummary[]> {

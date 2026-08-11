@@ -70,6 +70,46 @@ export interface ProfileProbeResult extends ProbeResult {
   readonly profileId: string;
   readonly harnessId: string;
   readonly observedAt: string;
+  readonly warnings?: readonly ProfileProbeWarning[];
+}
+
+export interface ProbeAccountObservation {
+  readonly observedAt: string;
+  readonly account: ProbeAccount;
+}
+
+export interface ProfileProbeWarning {
+  readonly code: "account_identity_drift";
+  readonly message: string;
+  readonly baseline: ProbeAccountObservation;
+  readonly observed: ProbeAccountObservation;
+}
+
+export interface ProfileProbeSnapshot extends ProbeResult {
+  readonly observedAt: string;
+}
+
+/** Persisted adapter-reported facts. They never grant entitlements or select an account. */
+export interface ProfileObservation {
+  readonly version: 1;
+  readonly profileId: string;
+  readonly harnessId: string;
+  /** Hash of harness, config, and environment fields that can select an account. */
+  readonly profileFingerprint: string;
+  readonly baselineAccount?: ProbeAccountObservation;
+  readonly latest: ProfileProbeSnapshot;
+}
+
+export interface HarnessProfileReference {
+  readonly id: string;
+  readonly label: string;
+  readonly enabled: boolean;
+  readonly defaultModel?: string;
+}
+
+export interface HarnessInspection {
+  readonly manifest: HarnessManifest;
+  readonly profiles: readonly HarnessProfileReference[];
 }
 
 export interface HarnessOpenInput {

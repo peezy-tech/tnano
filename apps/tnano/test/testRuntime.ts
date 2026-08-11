@@ -4,6 +4,7 @@ import type { CliIo } from "../src/io.ts";
 import type {
   AddProfileInput,
   EventListener,
+  HarnessInspection,
   HarnessSummary,
   ProfileSummary,
   RuntimeEvent,
@@ -36,7 +37,7 @@ export function memoryIo(input = ""): CliIo & { outputText(): string; errorText(
 
 export class TestRuntime implements RuntimePort {
   readonly harnesses: HarnessSummary[] = [
-    { id: "echo", label: "Echo", capabilities: ["streaming"] },
+    { id: "echo", apiVersion: 1, label: "Echo", capabilities: ["streaming"] },
   ];
   readonly profiles: ProfileSummary[] = [
     { id: "echo-main", harnessId: "echo", label: "Echo main", status: "ready" },
@@ -56,6 +57,15 @@ export class TestRuntime implements RuntimePort {
 
   async listHarnesses(): Promise<readonly HarnessSummary[]> {
     return this.harnesses;
+  }
+
+  async inspectHarness(id: string): Promise<HarnessInspection> {
+    const harness = this.harnesses.find((candidate) => candidate.id === id);
+    if (harness === undefined) throw new Error(`Unknown harness: ${id}`);
+    return {
+      ...harness,
+      profiles: this.profiles.filter((profile) => profile.harnessId === id),
+    };
   }
 
   async listProfiles(): Promise<readonly ProfileSummary[]> {

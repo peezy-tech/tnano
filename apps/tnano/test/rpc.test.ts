@@ -57,6 +57,36 @@ class InterruptRuntime extends TestRuntime {
 }
 
 describe("RPC mode", () => {
+  it("advertises and serves harness capability inspection", async () => {
+    const input = [
+      { id: 1, method: "initialize" },
+      { id: 2, method: "harness.inspect", params: { harnessId: "echo" } },
+      { id: 3, method: "shutdown" },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join("\n");
+    const io = memoryIo(`${input}\n`);
+
+    await expect(runCli(["--mode", "rpc"], io, () => new TestRuntime())).resolves.toBe(0);
+    const records = io
+      .outputText()
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records.find((record) => record.id === 1)).toEqual(
+      expect.objectContaining({
+        result: expect.objectContaining({ methods: expect.arrayContaining(["harness.inspect"]) }),
+      }),
+    );
+    expect(records.find((record) => record.id === 2)).toMatchObject({
+      result: {
+        id: "echo",
+        capabilities: ["streaming"],
+        profiles: [{ id: "echo-main" }],
+      },
+    });
+  });
+
   it("correlates responses and emits event notifications as strict JSONL", async () => {
     const input = [
       { id: 1, method: "initialize" },

@@ -13,6 +13,7 @@ import { VERSION } from "./version.ts";
 export const RPC_METHOD_NAMES = [
   "initialize",
   "harness.list",
+  "harness.inspect",
   "profile.list",
   "profile.probe",
   "session.list",
@@ -97,6 +98,8 @@ async function dispatch(runtime: RuntimePort, method: RpcMethod, params: Record<
       };
     case "harness.list":
       return runtime.listHarnesses();
+    case "harness.inspect":
+      return runtime.inspectHarness(requiredString(params, "harnessId"));
     case "profile.list":
       return runtime.listProfiles();
     case "profile.probe":

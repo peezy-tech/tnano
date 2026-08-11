@@ -165,12 +165,14 @@ async function probePiProfile(
       };
     }
     const authType = typeof result.authType === "string" ? result.authType : undefined;
-    const metadata: JsonObject = authType === undefined ? {} : { authType };
+    const metadata: JsonObject = {
+      provider: config.provider,
+      ...(authType === undefined ? {} : { authType }),
+    };
     if (result.status === "ready") {
       return {
         status: "ready",
         version,
-        account: { id: config.provider, label: config.provider },
         metadata,
       };
     }

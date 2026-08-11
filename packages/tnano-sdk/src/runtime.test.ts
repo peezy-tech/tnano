@@ -516,6 +516,106 @@ test("profile selection is explicit and registry rejects duplicate adapters", as
   assert.equal(registry.list().length, 0);
 });
 
+test("harness inspection reports capabilities and profile references without configuration", async (context) => {
+  const runtime = await createTNanoRuntime({ dataDir: await temporaryDataDir(context) });
+  runtime.register(fixtureAdapter([]));
+  await runtime.upsertProfile(PROFILE);
+  await runtime.upsertProfile({
+    id: "echo-personal",
+    harness: "echo",
+    label: "Echo personal",
+    enabled: false,
+    config: { account: "personal-secret" },
+    environment: { TOKEN: "personal-token" },
+  });
+
+  const inspection = runtime.inspectHarness("echo");
+  assert.deepEqual(inspection, {
+    manifest: {
+      apiVersion: 1,
+      id: "echo",
+      label: "Echo",
+      version: "1.0.0",
+      capabilities: ["streaming"],
+    },
+    profiles: [
+      { id: "echo-personal", label: "Echo personal", enabled: false },
+      { id: "echo-work", label: "Echo work", enabled: true, defaultModel: "echo-1" },
+    ],
+  });
+  assert.doesNotMatch(JSON.stringify(inspection), /personal-secret|personal-token|TOKEN/u);
+  assert.throws(() => runtime.inspectHarness("missing"), hasCode("ADAPTER_NOT_FOUND"));
+});
+
+test("profile probes persist an account baseline and warn on identity drift", async (context) => {
+  const dataDir = await temporaryDataDir(context);
+  const clock = deterministicClock();
+  let account = { id: "account-work", email: "work@example.test", plan: "Pro" };
+  const adapter: HarnessAdapter = {
+    ...fixtureAdapter([]),
+    probe: () => ({ status: "ready", account }),
+  };
+  const runtime = await createTNanoRuntime({ dataDir, clock });
+  runtime.register(adapter);
+  await runtime.upsertProfile(PROFILE);
+
+  const baseline = await runtime.probeProfile(PROFILE.id);
+  assert.equal(baseline.warnings, undefined);
+  assert.deepEqual(runtime.getProfileObservation(PROFILE.id)?.baselineAccount, {
+    observedAt: baseline.observedAt,
+    account: { id: "account-work", email: "work@example.test", plan: "Pro" },
+  });
+
+  account = { id: "account-work", email: "work@example.test", plan: "Team" };
+  assert.equal((await runtime.probeProfile(PROFILE.id)).warnings, undefined);
+
+  account = { id: "account-personal", email: "personal@example.test", plan: "Free" };
+  const drifted = await runtime.probeProfile(PROFILE.id);
+  assert.deepEqual(drifted.warnings, [
+    {
+      code: "account_identity_drift",
+      message:
+        "Profile echo-work now reports a different account id; T-Nano will not switch or fail over automatically.",
+      baseline: {
+        observedAt: baseline.observedAt,
+        account: { id: "account-work", email: "work@example.test", plan: "Pro" },
+      },
+      observed: {
+        observedAt: drifted.observedAt,
+        account: { id: "account-personal", email: "personal@example.test", plan: "Free" },
+      },
+    },
+  ]);
+
+  const observationsText = await readFile(join(dataDir, "observations.json"), "utf8");
+  assert.match(observationsText, /"baselineAccount"/u);
+  assert.match(observationsText, /"account-personal"/u);
+  await runtime.close();
+
+  const reopened = await createTNanoRuntime({ dataDir, clock });
+  reopened.register(adapter);
+  const repeated = await reopened.probeProfile(PROFILE.id);
+  assert.equal(repeated.warnings?.[0]?.code, "account_identity_drift");
+  assert.equal(
+    reopened.getProfileObservation(PROFILE.id)?.baselineAccount?.account.id,
+    "account-work",
+  );
+
+  await reopened.upsertProfile({ ...PROFILE, defaultModel: "echo-2" });
+  assert.equal(
+    (await reopened.probeProfile(PROFILE.id)).warnings?.[0]?.code,
+    "account_identity_drift",
+  );
+
+  await reopened.upsertProfile({ ...PROFILE, config: { account: "personal" } });
+  const reconfigured = await reopened.probeProfile(PROFILE.id);
+  assert.equal(reconfigured.warnings, undefined);
+  assert.equal(
+    reopened.getProfileObservation(PROFILE.id)?.baselineAccount?.account.id,
+    "account-personal",
+  );
+});
+
 test("resume rejects an adapter continuation ABI version change", async (context) => {
   const dataDir = await temporaryDataDir(context);
   const firstRuntime = await createTNanoRuntime({

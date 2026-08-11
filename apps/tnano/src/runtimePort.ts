@@ -3,11 +3,16 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 
 export interface HarnessSummary {
   id: string;
+  apiVersion?: number;
   label?: string;
   version?: string;
   description?: string;
   capabilities?: readonly string[];
   [key: string]: unknown;
+}
+
+export interface HarnessInspection extends HarnessSummary {
+  profiles: readonly ProfileSummary[];
 }
 
 export interface ProfileSummary {
@@ -75,6 +80,7 @@ export interface RuntimePort {
   initialize(): Promise<unknown>;
   shutdown(): Promise<void>;
   listHarnesses(): Promise<readonly HarnessSummary[]>;
+  inspectHarness(id: string): Promise<HarnessInspection>;
   listProfiles(): Promise<readonly ProfileSummary[]>;
   addProfile(input: AddProfileInput): Promise<ProfileSummary>;
   removeProfile(id: string): Promise<void>;

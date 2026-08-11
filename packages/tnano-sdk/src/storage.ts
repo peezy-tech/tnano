@@ -9,6 +9,7 @@ import type {
   HarnessEvent,
   HarnessProfile,
   JsonObject,
+  ProfileObservation,
   RuntimeSettings,
   SessionBinding,
 } from "./types.ts";
@@ -18,7 +19,13 @@ interface ProfilesDocument {
   readonly profiles: readonly HarnessProfile[];
 }
 
+interface ObservationsDocument {
+  readonly version: 1;
+  readonly observations: readonly ProfileObservation[];
+}
+
 const EMPTY_PROFILES: ProfilesDocument = { version: 1, profiles: [] };
+const EMPTY_OBSERVATIONS: ObservationsDocument = { version: 1, observations: [] };
 const EMPTY_SETTINGS: RuntimeSettings = { version: 1, values: {} };
 
 let temporaryFileCounter = 0;
@@ -121,6 +128,9 @@ export class FileRuntimeStore {
       if (!(await exists(NodePath.join(this.#root, "settings.json")))) {
         await atomicWriteJson(NodePath.join(this.#root, "settings.json"), EMPTY_SETTINGS);
       }
+      if (!(await exists(NodePath.join(this.#root, "observations.json")))) {
+        await atomicWriteJson(NodePath.join(this.#root, "observations.json"), EMPTY_OBSERVATIONS);
+      }
     } catch (error) {
       throw TNanoError.from(
         error,
@@ -144,6 +154,24 @@ export class FileRuntimeStore {
       profiles: [...profiles].sort((left, right) => left.id.localeCompare(right.id)),
     };
     await atomicWriteJson(NodePath.join(this.#root, "profiles.json"), document);
+  }
+
+  async readObservations(): Promise<readonly ProfileObservation[]> {
+    const value = await readJson(NodePath.join(this.#root, "observations.json"));
+    if (!isObservationsDocument(value)) {
+      throw invalidFile("observations.json");
+    }
+    return value.observations;
+  }
+
+  async writeObservations(observations: readonly ProfileObservation[]): Promise<void> {
+    const document: ObservationsDocument = {
+      version: 1,
+      observations: [...observations].sort((left, right) =>
+        left.profileId.localeCompare(right.profileId),
+      ),
+    };
+    await atomicWriteJson(NodePath.join(this.#root, "observations.json"), document);
   }
 
   async readSettings(): Promise<RuntimeSettings> {
@@ -667,6 +695,65 @@ function isProfilesDocument(value: unknown): value is ProfilesDocument {
     value.version === 1 &&
     Array.isArray(value.profiles) &&
     value.profiles.every(isHarnessProfile)
+  );
+}
+
+function isObservationsDocument(value: unknown): value is ObservationsDocument {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    Array.isArray(value.observations) &&
+    value.observations.every(isProfileObservation)
+  );
+}
+
+function isProfileObservation(value: unknown): value is ProfileObservation {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    typeof value.profileId === "string" &&
+    typeof value.harnessId === "string" &&
+    typeof value.profileFingerprint === "string" &&
+    (value.baselineAccount === undefined || isProbeAccountObservation(value.baselineAccount)) &&
+    isProbeSnapshot(value.latest)
+  );
+}
+
+function isProbeAccountObservation(value: unknown): boolean {
+  return isRecord(value) && typeof value.observedAt === "string" && isProbeAccount(value.account);
+}
+
+function isProbeSnapshot(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.observedAt === "string" &&
+    typeof value.status === "string" &&
+    ["ready", "unavailable", "unauthenticated", "error"].includes(value.status) &&
+    (value.message === undefined || typeof value.message === "string") &&
+    (value.version === undefined || typeof value.version === "string") &&
+    (value.account === undefined || isProbeAccount(value.account)) &&
+    (value.models === undefined ||
+      (Array.isArray(value.models) && value.models.every(isProbeModel))) &&
+    (value.metadata === undefined || isRecord(value.metadata))
+  );
+}
+
+function isProbeAccount(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    [value.id, value.label, value.email, value.plan].every(
+      (entry) => entry === undefined || typeof entry === "string",
+    )
+  );
+}
+
+function isProbeModel(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    (value.label === undefined || typeof value.label === "string") &&
+    (value.available === undefined || typeof value.available === "boolean") &&
+    (value.metadata === undefined || isRecord(value.metadata))
   );
 }
 

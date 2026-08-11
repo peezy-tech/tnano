@@ -24,10 +24,14 @@ const profile: HarnessProfile = {
   },
 };
 
-function installRpcResponder(child: FakePiChild) {
+function installRpcResponder(
+  child: FakePiChild,
+  sessionId = "native-1",
+  sessionFile = "/sessions/pi-work/native-1.jsonl",
+) {
   const state = {
-    sessionId: "native-1",
-    sessionFile: "/sessions/pi-work/native-1.jsonl",
+    sessionId,
+    sessionFile,
     isStreaming: false,
   };
   child.onWrite = (record) => {
@@ -72,7 +76,8 @@ NodeTest.test("probe reports version and redacted auth readiness", async () => {
 
   NodeAssert.equal(result.status, "ready");
   NodeAssert.equal(result.version, "pi 1.2.3");
-  NodeAssert.deepEqual(result.metadata, { authType: "oauth" });
+  NodeAssert.deepEqual(result.metadata, { provider: "openai", authType: "oauth" });
+  NodeAssert.equal(result.account, undefined);
   NodeAssert.deepEqual(launcher.spawns[1]?.args, [
     "auth",
     "check",
@@ -171,6 +176,89 @@ NodeTest.test("opens persistent RPC, maps a turn, resolves UI, and persists bind
   );
   NodeAssert.ok(events.some((event) => event.type === "turn.state" && event.state === "completed"));
   await session.close?.();
+});
+
+NodeTest.test("keeps two named profile agent and session directories isolated", async () => {
+  const workChild = new FakePiChild();
+  const personalChild = new FakePiChild();
+  installRpcResponder(workChild, "native-work", "/sessions/pi-work/native-work.jsonl");
+  installRpcResponder(
+    personalChild,
+    "native-personal",
+    "/sessions/pi-personal/native-personal.jsonl",
+  );
+  const launcher = new FakePiLauncher();
+  launcher.spawnChildren.push(workChild, personalChild);
+  const adapter = createPiAdapter({ launcher });
+  const personalProfile: HarnessProfile = {
+    id: "pi-personal",
+    harness: "pi",
+    label: "Pi personal",
+    enabled: true,
+    config: {
+      agentDir: "/profiles/pi-personal",
+      sessionDir: "/sessions/pi-personal",
+      provider: "anthropic",
+    },
+    environment: { PROFILE_MARKER: "personal" },
+  };
+
+  const work = await adapter.open({
+    profile,
+    sessionId: "tnano-work",
+    cwd: "/workspace",
+  });
+  const personal = await adapter.open({
+    profile: personalProfile,
+    sessionId: "tnano-personal",
+    cwd: "/workspace",
+  });
+
+  NodeAssert.deepEqual(
+    launcher.spawns.map((spawn) => spawn.options.env),
+    [
+      {
+        KEEP_ME: "yes",
+        REMOVE_ME: undefined,
+        PI_CODING_AGENT_DIR: "/profiles/pi-work",
+        PI_CODING_AGENT_SESSION_DIR: "/sessions/pi-work",
+      },
+      {
+        PROFILE_MARKER: "personal",
+        PI_CODING_AGENT_DIR: "/profiles/pi-personal",
+        PI_CODING_AGENT_SESSION_DIR: "/sessions/pi-personal",
+      },
+    ],
+  );
+  NodeAssert.deepEqual(work.binding, {
+    schema: 1,
+    profileId: "pi-work",
+    cwd: "/workspace",
+    sessionId: "native-work",
+    sessionFile: "/sessions/pi-work/native-work.jsonl",
+  });
+  NodeAssert.deepEqual(personal.binding, {
+    schema: 1,
+    profileId: "pi-personal",
+    cwd: "/workspace",
+    sessionId: "native-personal",
+    sessionFile: "/sessions/pi-personal/native-personal.jsonl",
+  });
+  NodeAssert.doesNotMatch(JSON.stringify(launcher.spawns[1]?.options.env), /pi-work/u);
+  const workBinding = work.binding;
+  if (workBinding === undefined) throw new Error("Work session did not produce a binding");
+  await NodeAssert.rejects(
+    async () =>
+      adapter.open({
+        profile: personalProfile,
+        sessionId: "tnano-work",
+        cwd: "/workspace",
+        resume: workBinding,
+      }),
+    (error: unknown) => error instanceof PiAdapterError && error.code === "invalid_resume",
+  );
+
+  await Promise.all([work.close?.(), personal.close?.()]);
 });
 
 NodeTest.test("resume requires an absolute, profile-pinned native session file", async () => {
