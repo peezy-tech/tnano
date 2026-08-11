@@ -3,6 +3,7 @@ import type * as NodeStream from "node:stream";
 import type { CliArguments } from "./args.ts";
 import { CliError, EXIT_CODES } from "./errors.ts";
 import {
+  printHarnessInspection,
   printHarnesses,
   printJson,
   printPrettyJson,
@@ -11,7 +12,7 @@ import {
 } from "./presentation.ts";
 import type { RuntimePort } from "./runtimePort.ts";
 
-const COMMANDS = new Set(["harnesses", "profiles", "profile", "sessions", "doctor"]);
+const COMMANDS = new Set(["harnesses", "harness", "profiles", "profile", "sessions", "doctor"]);
 
 export function hasTopLevelCommand(args: CliArguments): boolean {
   const first = args.positionals[0];
@@ -68,6 +69,19 @@ export async function executeTopLevelCommand(
       const harnesses = await runtime.listHarnesses();
       if (target.json) printJson(target.output, harnesses);
       else printHarnesses(target.output, harnesses);
+      return;
+    }
+    case "harness": {
+      if (operation !== "inspect") {
+        throw new CliError("invalid_arguments", "harness requires inspect", EXIT_CODES.usage);
+      }
+      expectNoExtra(args.positionals, 3);
+      if (identifier === undefined) {
+        throw new CliError("invalid_arguments", "harness inspect requires an id", EXIT_CODES.usage);
+      }
+      const inspection = await runtime.inspectHarness(identifier);
+      if (target.json) printJson(target.output, inspection);
+      else printHarnessInspection(target.output, inspection);
       return;
     }
     case "profiles": {

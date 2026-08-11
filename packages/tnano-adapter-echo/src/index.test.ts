@@ -1,4 +1,5 @@
 import type { HarnessEventInput, HarnessProfile, HarnessSession, JsonValue } from "@t-nano/sdk";
+import { runAdapterConformance } from "@t-nano/sdk/conformance";
 import { describe, expect, it } from "vite-plus/test";
 
 import echoAdapter, { createEchoAdapter, EchoAdapterError } from "./index.ts";
@@ -37,6 +38,34 @@ function deltas(events: readonly HarnessEventInput[]): string[] {
 }
 
 describe("echo adapter", () => {
+  it("passes the public two-profile adapter conformance suite", async () => {
+    await expect(
+      runAdapterConformance({
+        adapter: createEchoAdapter(),
+        cases: [
+          {
+            profile,
+            sessionId: "conformance-work",
+            cwd: "/echo-work",
+            run: { text: "work" },
+          },
+          {
+            profile: { ...profile, id: "echo-personal", label: "Echo personal" },
+            sessionId: "conformance-personal",
+            cwd: "/echo-personal",
+            run: { text: "personal" },
+          },
+        ],
+        verifyIsolation({ bindings }) {
+          expect(bindings).toEqual([
+            { schema: 1, nativeSessionId: "echo:conformance-work" },
+            { schema: 1, nativeSessionId: "echo:conformance-personal" },
+          ]);
+        },
+      }),
+    ).resolves.toMatchObject({ adapterId: "echo" });
+  });
+
   it("exports deterministic manifest and probe metadata", async () => {
     expect(echoAdapter.manifest).toEqual({
       apiVersion: 1,

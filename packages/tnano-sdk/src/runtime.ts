@@ -11,6 +11,7 @@ import {
   type HarnessAdapter,
   type HarnessEvent,
   type HarnessEventInput,
+  type HarnessInspection,
   type HarnessManifest,
   type HarnessProfile,
   type HarnessRunInput,
@@ -19,8 +20,12 @@ import {
   type JsonObject,
   type JsonValue,
   type ProbeProfileOptions,
+  type ProbeAccount,
+  type ProbeAccountObservation,
   type ProbeResult,
+  type ProfileObservation,
   type ProfileProbeResult,
+  type ProfileProbeWarning,
   type ResumeSessionInput,
   type RuntimeSession,
   type RuntimeSettings,
@@ -39,6 +44,7 @@ export class TNanoRuntime {
   readonly #clock: Clock;
   readonly #idGenerator: IdGenerator;
   readonly #profiles = new Map<string, HarnessProfile>();
+  readonly #observations = new Map<string, ProfileObservation>();
   readonly #activeSessions = new Map<string, RuntimeSessionController>();
   readonly #openingSessions = new Set<string>();
   readonly #activations = new Set<Promise<void>>();
@@ -49,6 +55,7 @@ export class TNanoRuntime {
   #runtimeClosePromise: Promise<void> | undefined;
   #initialization: Promise<void> | undefined;
   #profileMutation: Promise<void> = Promise.resolve();
+  #observationMutation: Promise<void> = Promise.resolve();
 
   constructor(options: TNanoRuntimeOptions) {
     this.#store = new FileRuntimeStore(options.dataDir);
@@ -92,6 +99,23 @@ export class TNanoRuntime {
     return this.#registry.list();
   }
 
+  inspectHarness(harnessId: string): HarnessInspection {
+    this.#assertInitialized();
+    const adapter = this.#registry.require(harnessId);
+    return {
+      manifest: cloneHarnessManifest(adapter.manifest),
+      profiles: [...this.#profiles.values()]
+        .filter((profile) => profile.harness === harnessId)
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .map((profile) => ({
+          id: profile.id,
+          label: profile.label,
+          enabled: profile.enabled,
+          ...(profile.defaultModel === undefined ? {} : { defaultModel: profile.defaultModel }),
+        })),
+    };
+  }
+
   listProfiles(): readonly HarnessProfile[] {
     this.#assertInitialized();
     return [...this.#profiles.values()]
@@ -103,6 +127,21 @@ export class TNanoRuntime {
     this.#assertInitialized();
     const profile = this.#profiles.get(profileId);
     return profile === undefined ? undefined : cloneHarnessProfile(profile);
+  }
+
+  getProfileObservation(profileId: string): ProfileObservation | undefined {
+    this.#assertInitialized();
+    const profile = this.#profiles.get(profileId);
+    const observation = this.#observations.get(profileId);
+    if (
+      profile === undefined ||
+      observation === undefined ||
+      observation.harnessId !== profile.harness ||
+      observation.profileFingerprint !== profileAccountFingerprint(profile)
+    ) {
+      return undefined;
+    }
+    return cloneProfileObservation(observation);
   }
 
   async upsertProfile(profile: HarnessProfile): Promise<HarnessProfile> {
@@ -182,15 +221,10 @@ export class TNanoRuntime {
     throwIfAborted(options.signal);
     const profile = this.#requireProfile(profileId);
     const adapter = this.#registry.require(profile.harness);
+    let result: ProbeResult;
     try {
-      const result = await adapter.probe(cloneHarnessProfile(profile), options.signal);
+      result = await adapter.probe(cloneHarnessProfile(profile), options.signal);
       validateProbeResult(result);
-      return {
-        ...result,
-        profileId,
-        harnessId: adapter.manifest.id,
-        observedAt: this.#now(),
-      };
     } catch (error) {
       throw TNanoError.from(
         error,
@@ -199,6 +233,21 @@ export class TNanoRuntime {
         { profileId, harnessId: adapter.manifest.id },
       );
     }
+    const observedAt = this.#now();
+    const observation = await this.#recordObservation(
+      profile,
+      adapter.manifest.id,
+      cloneProbeResult(result),
+      observedAt,
+    );
+    const warnings = accountDriftWarnings(observation);
+    return {
+      ...cloneProbeResult(result),
+      profileId,
+      harnessId: adapter.manifest.id,
+      observedAt,
+      ...(warnings.length === 0 ? {} : { warnings }),
+    };
   }
 
   async start(input: StartSessionInput): Promise<RuntimeSession> {
@@ -427,14 +476,18 @@ export class TNanoRuntime {
 
   async #initializeOnce(): Promise<void> {
     await this.#store.initialize();
-    const [profiles, settings] = await Promise.all([
+    const [profiles, settings, observations] = await Promise.all([
       this.#store.readProfiles(),
       this.#store.readSettings(),
+      this.#store.readObservations(),
     ]);
     for (const profile of profiles) {
       validateProfile(profile);
       const storedProfile = cloneHarnessProfile(profile);
       this.#profiles.set(storedProfile.id, storedProfile);
+    }
+    for (const observation of observations) {
+      this.#observations.set(observation.profileId, cloneProfileObservation(observation));
     }
     this.#settings = cloneRuntimeSettings(settings);
     this.#initialized = true;
@@ -593,6 +646,53 @@ export class TNanoRuntime {
     const previous = this.#profileMutation;
     let release: () => void = () => undefined;
     this.#profileMutation = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  async #recordObservation(
+    profile: HarnessProfile,
+    harnessId: string,
+    result: ProbeResult,
+    observedAt: string,
+  ): Promise<ProfileObservation> {
+    return this.#mutateObservations(async () => {
+      const profileFingerprint = profileAccountFingerprint(profile);
+      const previous = this.#observations.get(profile.id);
+      const compatiblePrevious =
+        previous !== undefined &&
+        previous.harnessId === harnessId &&
+        previous.profileFingerprint === profileFingerprint
+          ? previous
+          : undefined;
+      const account = stableAccount(result);
+      const baselineAccount =
+        compatiblePrevious?.baselineAccount ??
+        (account === undefined ? undefined : { observedAt, account });
+      const observation: ProfileObservation = {
+        version: 1,
+        profileId: profile.id,
+        harnessId,
+        profileFingerprint,
+        ...(baselineAccount === undefined ? {} : { baselineAccount }),
+        latest: { ...result, observedAt },
+      };
+      this.#observations.set(profile.id, cloneProfileObservation(observation));
+      await this.#store.writeObservations([...this.#observations.values()]);
+      return cloneProfileObservation(observation);
+    });
+  }
+
+  async #mutateObservations<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.#observationMutation;
+    let release: () => void = () => undefined;
+    this.#observationMutation = new Promise<void>((resolve) => {
       release = resolve;
     });
     await previous;
@@ -896,6 +996,16 @@ export function profileCompatibilityFingerprint(profile: HarnessProfile): string
   return NodeCrypto.createHash("sha256").update(canonicalJson(compatibleFields)).digest("hex");
 }
 
+function profileAccountFingerprint(profile: HarnessProfile): string {
+  validateProfile(profile);
+  const accountFields: JsonObject = {
+    harness: profile.harness,
+    config: profile.config,
+    environment: profile.environment ?? null,
+  };
+  return NodeCrypto.createHash("sha256").update(canonicalJson(accountFields)).digest("hex");
+}
+
 function validateProfile(profile: HarnessProfile): void {
   if (!isPlainObject(profile)) {
     throw new TNanoError("INVALID_ARGUMENT", "Profile must be a JSON object");
@@ -1048,6 +1158,76 @@ function cloneHarnessProfile(profile: HarnessProfile): HarnessProfile {
       ? {}
       : { defaultOptions: cloneJson(profile.defaultOptions) }),
   };
+}
+
+function cloneHarnessManifest(manifest: HarnessManifest): HarnessManifest {
+  return {
+    apiVersion: manifest.apiVersion,
+    id: manifest.id,
+    label: manifest.label,
+    version: manifest.version,
+    capabilities: [...manifest.capabilities],
+  };
+}
+
+function cloneProbeResult(result: ProbeResult): ProbeResult {
+  return JSON.parse(JSON.stringify(result)) as ProbeResult;
+}
+
+function cloneProfileObservation(observation: ProfileObservation): ProfileObservation {
+  return JSON.parse(JSON.stringify(observation)) as ProfileObservation;
+}
+
+function stableAccount(result: ProbeResult): ProbeAccount | undefined {
+  if (result.status !== "ready" || result.account === undefined) return undefined;
+  const { id, email } = result.account;
+  if ((id === undefined || id.trim() === "") && (email === undefined || email.trim() === "")) {
+    return undefined;
+  }
+  return JSON.parse(JSON.stringify(result.account)) as ProbeAccount;
+}
+
+function changedAccountIdentity(
+  baseline: ProbeAccount,
+  observed: ProbeAccount,
+): "id" | "email" | undefined {
+  if (
+    baseline.id !== undefined &&
+    baseline.id.trim() !== "" &&
+    observed.id !== undefined &&
+    observed.id.trim() !== ""
+  ) {
+    return baseline.id === observed.id ? undefined : "id";
+  }
+  if (
+    baseline.email !== undefined &&
+    baseline.email.trim() !== "" &&
+    observed.email !== undefined &&
+    observed.email.trim() !== ""
+  ) {
+    return baseline.email === observed.email ? undefined : "email";
+  }
+  return undefined;
+}
+
+function accountDriftWarnings(observation: ProfileObservation): readonly ProfileProbeWarning[] {
+  const baseline = observation.baselineAccount;
+  const observedAccount = stableAccount(observation.latest);
+  if (baseline === undefined || observedAccount === undefined) return [];
+  const changedField = changedAccountIdentity(baseline.account, observedAccount);
+  if (changedField === undefined) return [];
+  const observed: ProbeAccountObservation = {
+    observedAt: observation.latest.observedAt,
+    account: observedAccount,
+  };
+  return [
+    {
+      code: "account_identity_drift",
+      message: `Profile ${observation.profileId} now reports a different account ${changedField}; T-Nano will not switch or fail over automatically.`,
+      baseline,
+      observed,
+    },
+  ];
 }
 
 function cloneRuntimeSettings(settings: RuntimeSettings): RuntimeSettings {

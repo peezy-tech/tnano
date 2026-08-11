@@ -1,6 +1,7 @@
 import type * as NodeStream from "node:stream";
 
 import type {
+  HarnessInspection,
   HarnessSummary,
   ProfileSummary,
   RuntimeEvent,
@@ -68,6 +69,28 @@ export function printHarnesses(
       output,
       [harness.id, harness.label ?? harness.id, harness.version ?? "", capabilities].join("\t"),
     );
+  }
+}
+
+export function printHarnessInspection(
+  output: NodeStream.Writable,
+  inspection: HarnessInspection,
+): void {
+  writeLine(output, `${inspection.label ?? inspection.id} (${inspection.id})`);
+  if (inspection.apiVersion !== undefined)
+    writeLine(output, `Adapter API: ${inspection.apiVersion}`);
+  if (inspection.version !== undefined) writeLine(output, `Version: ${inspection.version}`);
+  writeLine(output, "Capabilities:");
+  if ((inspection.capabilities?.length ?? 0) === 0) writeLine(output, "  (none declared)");
+  else
+    for (const capability of inspection.capabilities ?? []) writeLine(output, `  - ${capability}`);
+  writeLine(output, "Profiles:");
+  if (inspection.profiles.length === 0) {
+    writeLine(output, "  (none configured)");
+    return;
+  }
+  for (const profile of inspection.profiles) {
+    writeLine(output, `  - ${profile.id}\t${profile.label ?? profile.id}\t${profile.status ?? ""}`);
   }
 }
 

@@ -217,6 +217,97 @@ describe("Codex probing", () => {
 });
 
 describe("Codex exec sessions", () => {
+  it("keeps two named profile homes and environment overrides isolated", async () => {
+    const launcher = new FakeLauncher();
+    launcher.queue(
+      new FakeChild({
+        stdout: chunks([
+          '{"type":"thread.started","thread_id":"thread-work"}\n{"type":"turn.completed"}\n',
+        ]),
+        exit: { code: 0, signal: null },
+      }),
+    );
+    launcher.queue(
+      new FakeChild({
+        stdout: chunks([
+          '{"type":"thread.started","thread_id":"thread-personal"}\n{"type":"turn.completed"}\n',
+        ]),
+        exit: { code: 0, signal: null },
+      }),
+    );
+    const personalProfile: HarnessProfile = {
+      id: "codex-personal",
+      harness: "codex",
+      label: "Codex personal",
+      enabled: true,
+      config: { codexHome: "/profiles/codex-personal" },
+      environment: { PROFILE_MARKER: "personal" },
+    };
+    const adapter = createCodexAdapter({
+      launcher,
+      clock: immediateClock,
+      baseEnvironment: {
+        CODEX_HOME: "/profiles/host-default",
+        PROFILE_MARKER: "host",
+        SHARED_MARKER: "shared",
+      },
+    });
+    const work = await adapter.open({
+      profile,
+      sessionId: "session-work",
+      cwd: "/workspace/project",
+    });
+    const personal = await adapter.open({
+      profile: personalProfile,
+      sessionId: "session-personal",
+      cwd: "/workspace/project",
+    });
+
+    const [workEvents, personalEvents] = await Promise.all([
+      Array.fromAsync(work.run({ text: "work" })),
+      Array.fromAsync(personal.run({ text: "personal" })),
+    ]);
+
+    expect(launcher.launches.map((launch) => launch.env)).toEqual([
+      {
+        CODEX_HOME: "/profiles/codex-work",
+        PROFILE_FLAG: "enabled",
+        PROFILE_MARKER: "host",
+        SHARED_MARKER: "shared",
+      },
+      {
+        CODEX_HOME: "/profiles/codex-personal",
+        PROFILE_MARKER: "personal",
+        SHARED_MARKER: "shared",
+      },
+    ]);
+    expect(workEvents[0]).toMatchObject({
+      type: "binding.updated",
+      binding: { profileId: "codex-work", codexHomeKey: "/profiles/codex-work" },
+    });
+    expect(personalEvents[0]).toMatchObject({
+      type: "binding.updated",
+      binding: {
+        profileId: "codex-personal",
+        codexHomeKey: "/profiles/codex-personal",
+      },
+    });
+    expect(JSON.stringify(launcher.launches[1]?.env)).not.toContain("/profiles/codex-work");
+
+    const workBinding =
+      workEvents[0]?.type === "binding.updated" ? workEvents[0].binding : undefined;
+    if (workBinding === undefined) throw new Error("Work session did not produce a binding");
+    expect(() =>
+      adapter.open({
+        profile: personalProfile,
+        sessionId: "session-work",
+        cwd: "/workspace/project",
+        resume: workBinding,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "incompatible_resume" }));
+    await Promise.all([work.close?.(), personal.close?.()]);
+  });
+
   it("starts one subprocess, writes the prompt to stdin, and normalizes its JSONL", async () => {
     const launcher = new FakeLauncher();
     launcher.queue(

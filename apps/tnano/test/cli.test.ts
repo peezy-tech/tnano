@@ -120,6 +120,32 @@ describe("runCli", () => {
     });
   });
 
+  it("inspects one harness and its configured profiles", async () => {
+    const io = memoryIo();
+    const exitCode = await runCli(["harness", "inspect", "echo"], io, () => new TestRuntime());
+
+    expect(exitCode).toBe(0);
+    expect(io.outputText()).toContain("Echo (echo)\n");
+    expect(io.outputText()).toContain("Capabilities:\n  - streaming\n");
+    expect(io.outputText()).toContain("echo-main\tEcho main\tready");
+  });
+
+  it("emits machine-readable harness inspection in JSON mode", async () => {
+    const io = memoryIo();
+    const exitCode = await runCli(
+      ["--mode", "json", "harness", "inspect", "echo"],
+      io,
+      () => new TestRuntime(),
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(io.outputText())).toMatchObject({
+      id: "echo",
+      capabilities: ["streaming"],
+      profiles: [{ id: "echo-main", harnessId: "echo" }],
+    });
+  });
+
   it("rejects profile add when the id already exists", async () => {
     const io = memoryIo();
     const runtime = new TestRuntime();
