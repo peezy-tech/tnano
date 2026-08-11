@@ -1,0 +1,34 @@
+{
+  "name": "t-nano",
+  "version": "0.0.0",
+  "description": "A terminal-first switchboard for coding harnesses",
+  "license": "MIT",
+  "bin": {
+    "t-nano": "./dist/bin.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "node src/bin.ts",
+    "build": "vp pack",
+    "start": "node dist/bin.mjs",
+    "typecheck": "tsgo --noEmit",
+    "test": "vp test run"
+  },
+  "dependencies": {
+    "@t-nano/adapter-codex": "workspace:*",
+    "@t-nano/adapter-echo": "workspace:*",
+    "@t-nano/adapter-pi": "workspace:*",
+    "@t-nano/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@typescript/native-preview": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "engines": {
+    "node": "^24.13.1"
+  }
+}
